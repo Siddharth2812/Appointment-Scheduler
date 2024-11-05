@@ -176,7 +176,6 @@ def generate_survey(topic: str, num_questions: int, requirements: str, api_key: 
 # Render a question based on its type
 def render_question(question: Question):
     """Render a single question based on its type"""
-    # print(question['type'])
     try:
         # Display question text and description
         st.markdown(f"{question['question_text']}")
@@ -375,7 +374,6 @@ def create_calendar_event(title: str, start_time: str, duration_minutes: int = 6
     event = service.events().insert(calendarId='primary', body=event).execute()
     return f"Event created: {event.get('htmlLink')}"
 
-# Tool for answering questions
 class AskQuestionArgs(BaseModel):
     """Arguments for the ask_question tool."""
     question: str = Field(description="The question to ask the AI assistant")
@@ -396,8 +394,13 @@ def ask_question(question: str):
     retriever = vector_store.as_retriever()
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     prompt_template = '''
+    You are a friendly and helpful AI assistant. Your task is to answer questions based on the given context and chat history. If the question is not related to the context, engage in a friendly conversation.
+
     Context:
     {context}
+
+    Chat History:
+    {chat_history}
 
     Question: {question}
     Answer:
@@ -507,12 +510,11 @@ def generate_bot_response(prompt: str, llm: ChatOpenAI) -> dict:
         
         # Get conversation state from memory or start new
         state_snapshot = graph.get_state(config=config)
-        # print("State snapshot:", state_snapshot)
-        
+        print("State snapshot:", state_snapshot)
         conversation_state = {"messages": []}
         if state_snapshot and hasattr(state_snapshot, 'values'):
             conversation_state = state_snapshot.values.get("messages", {"messages": []})
-        conversation_state['messages'].append(analysis_prompt)
+        conversation_state['messages'].append(SystemMessage(content=analysis_prompt))
         conversation_state["messages"].append(input_message)
         
         # Run agent
@@ -524,9 +526,12 @@ def generate_bot_response(prompt: str, llm: ChatOpenAI) -> dict:
                     response_text = last_message.content
         print("Graph: ",response_text)
         print("Normal LLM: ", response)
-        # response = llm.invoke(analysis_prompt.format(prompt=prompt))
-        response = response_text
-        return json.loads(response)
+        try:
+            response = response_text
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return {"response": response, "needs_form": False, "form_config": None}
+
     except Exception as e:
         raise Exception(f"Error analyzing query: {str(e)}")
 
@@ -550,14 +555,14 @@ def call_model(state: AgentState):
            Arguments:
            - `title`: (Required) Name/subject of the event
            - `start_time`: (Required) ISO format datetime (YYYY-MM-DDTHH:MM:SS)
-           - `duration_minutes`: (Optional) Length of event in minutes, defaults to 60
-           - `attendees`: (Optional) Comma-separated email addresses
+           - `duration_minutes`: (Required) Length of event in minutes, defaults to 60
+           - `attendees`: (Required) Comma-separated email addresses
 
         2. ask_question: Asks a question to the AI assistant based on loaded documents. This tool is designed to provide information about any content loaded in the documents, including but not limited to meeting details, project information, and general knowledge. 
            Arguments:
            - `question`: (Required) The question to ask the AI assistant
 
-        3. create_dynamic_form: Creates a form for additional details if required.
+        3. create_dynamic_form_tool: Creates a form for additional details if required.
            Arguments:
            - `prompt`: (Required) The user's query or prompt that may require additional information.
            - `api_key`: (Required) The API key for accessing the language model or other services.
@@ -575,6 +580,8 @@ def call_model(state: AgentState):
     )
     if not any(isinstance(msg, SystemMessage) for msg in state["messages"]):
         state["messages"].insert(0, system_prompt)
+    print("Call model State", state)
+    state['messages'].append(system_prompt)
     response = model.invoke(state["messages"])
     print("Call model",response)
     return {"messages": [response]}
