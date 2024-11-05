@@ -176,7 +176,7 @@ def generate_survey(topic: str, num_questions: int, requirements: str, api_key: 
 # Render a question based on its type
 def render_question(question: Question):
     """Render a single question based on its type"""
-    print(question['type'])
+    # print(question['type'])
     try:
         # Display question text and description
         st.markdown(f"{question['question_text']}")
@@ -196,7 +196,7 @@ def render_question(question: Question):
             )
             
         elif question['type'] == 'multiple_choice':
-            if question.allow_multiple:
+            if question["allow_multiple"]:
                 return st.multiselect(
                     label=question['question_text'],
                     options=question['options'],
@@ -449,6 +449,7 @@ def create_dynamic_form_tool(prompt: str, api_key: str):
     """
     llm = ChatOpenAI(model="gpt-4o-mini", api_key=api_key)
     response_data = generate_bot_response(prompt, llm)
+    print("CREATE DYNAMIC FORM: ", response_data)
     if response_data["needs_form"] and response_data.get("form_config"):
         form = create_dynamic_form(response_data["form_config"], api_key)
         return form.dict()
@@ -495,16 +496,37 @@ def generate_bot_response(prompt: str, llm: ChatOpenAI) -> dict:
         "needs_form": True,
         "response": "Your initial response to the user",
         "form_config": {{
-            "title": "Meeting Scheduling Form Enter the Details",
+            "title": "Meeting Scheduling Form Enter the Details",   
             "description": "Please provide the details to schedule your meeting Title, Date, Start Time, Duration, Participants",
             "num_questions": 5
         }} 
     }}
     """
-    
     try:
-        response = llm.invoke(analysis_prompt.format(prompt=prompt))
-        return json.loads(response.content)
+        input_message = HumanMessage(content=prompt)
+        
+        # Get conversation state from memory or start new
+        state_snapshot = graph.get_state(config=config)
+        # print("State snapshot:", state_snapshot)
+        
+        conversation_state = {"messages": []}
+        if state_snapshot and hasattr(state_snapshot, 'values'):
+            conversation_state = state_snapshot.values.get("messages", {"messages": []})
+        conversation_state['messages'].append(analysis_prompt)
+        conversation_state["messages"].append(input_message)
+        
+        # Run agent
+        for response in graph.stream(conversation_state, config=config):
+            if 'agent' in response and 'messages' in response['agent']:
+                last_message = response['agent']['messages'][-1]
+                if isinstance(last_message, AIMessage) and hasattr(last_message, 'content'):
+                    # Add AI message to session state
+                    response_text = last_message.content
+        print("Graph: ",response_text)
+        print("Normal LLM: ", response)
+        # response = llm.invoke(analysis_prompt.format(prompt=prompt))
+        response = response_text
+        return json.loads(response)
     except Exception as e:
         raise Exception(f"Error analyzing query: {str(e)}")
 
@@ -554,7 +576,10 @@ def call_model(state: AgentState):
     if not any(isinstance(msg, SystemMessage) for msg in state["messages"]):
         state["messages"].insert(0, system_prompt)
     response = model.invoke(state["messages"])
+    print("Call model",response)
     return {"messages": [response]}
+
+
 def tool_node(state: AgentState):
     outputs = []
     for tool_call in state["messages"][-1].tool_calls:
@@ -629,6 +654,7 @@ if st.session_state.current_form:
         if submitted:
             llm = ChatOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             result = process_form_responses(responses, form_data, llm)
+            print("Process fomr Response: ", result)
             st.session_state.messages.append({"role": "assistant", "content": result})
             st.session_state.current_form = None
             st.rerun()
@@ -638,7 +664,9 @@ elif prompt := st.chat_input("How can I help you schedule events or provide sugg
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.spinner("Thinking..."):
         llm = ChatOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        print(prompt)
         form_analysis = generate_bot_response(prompt, llm)
+        print("FORMANALYSIS : ", form_analysis)
         st.session_state.messages.append({"role": "assistant", "content": form_analysis["response"]})
         if form_analysis["needs_form"]:
             form = create_dynamic_form(form_analysis["form_config"], os.getenv("OPENAI_API_KEY"))
@@ -661,3 +689,4 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
+
