@@ -6,8 +6,7 @@ st.set_page_config(page_title="Calendar Assistant", page_icon="📅")
 from datetime import datetime, timedelta
 from typing import Annotated, Sequence, TypedDict
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
-# from langgraph.graph.message import add_messages
-import operator
+from langgraph.graph.message import add_messages
 from langchain_core.messages import ToolMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.tools import tool
@@ -41,18 +40,12 @@ class AskQuestionArgs(BaseModel):
 def ask_question(question: str):
     """Ask a question to the AI assistant based on the loaded documents."""
     documents = []
-    data_folder = "data"
-    
-    # Load documents
+    data_folder = "/home/harsha/Documents/Training/meetSchedulerLangchain/data"
     for filename in os.listdir(data_folder):
         if filename.endswith(".pdf"):
             pdf_path = os.path.join(data_folder, filename)
             documents.extend(PyPDFLoader(pdf_path).load())
-    
-    if not documents:
-        print("No documents loaded.")  # Debugging statement
-        return "No documents available to answer the question."
-    
+
     embedding_model = OpenAIEmbeddings()
     vector_store = FAISS.from_documents(documents, embedding_model)
     retriever = vector_store.as_retriever()
@@ -77,11 +70,6 @@ def ask_question(question: str):
 
     relevant_docs = retriever.get_relevant_documents(question)
     context = "\n".join([doc.page_content for doc in relevant_docs])
-    
-    if not context:
-        print("No relevant documents found for the question.")  # Debugging statement
-        return "I couldn't find any relevant documents to answer your question."
-
     prompt_input = {
         "context": context,
         "question": question,
@@ -89,12 +77,8 @@ def ask_question(question: str):
     }
     formatted_prompt = prompt.format(**prompt_input)
     response = llm.invoke(formatted_prompt)
-    
-    if response and hasattr(response, 'content'):
-        return response.content
-    else:
-        print("No response generated from the model.")  # Debugging statement
-        return "I couldn't generate a response."
+    print(response)
+    return response.content
 # Google Calendar Setup
 SCOPES = ['openid', 'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile']
 
@@ -148,14 +132,13 @@ def create_calendar_event(title: str, start_time: str, duration_minutes: int = 6
 
 # LangGraph Setup
 class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], operator.add]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
 
 model = ChatOpenAI(model="gpt-4o-mini")
 tools = [create_calendar_event, ask_question]
 model = model.bind_tools(tools)
 
 def tool_node(state: AgentState):
-    print("TOOL NODE", state)  # Debugging statement
     outputs = []
     for tool_call in state["messages"][-1].tool_calls:
         tool_result = {tool.name: tool for tool in tools}[tool_call["name"]].invoke(
@@ -183,7 +166,7 @@ def call_model(state: AgentState):
            - `duration_minutes`: (Optional) Length of event in minutes, defaults to 60
            - `attendees`: (Optional) Comma-separated email addresses
 
-        2. ask_question: Asks a question to the AI assistant based on loaded documents. This tool is designed to provide information about any content loaded in the documents, including but not limited to meeting details, project information, and general knowledge. 
+        2. ask_question: Asks a question to the AI assistant based on loaded documents.
            Arguments:
            - `question`: (Required) The question to ask the AI assistant
 
@@ -193,21 +176,17 @@ def call_model(state: AgentState):
         3. "Set up a 2-hour planning session next Monday at 10am with the team: alice@company.com, charlie@company.com"
         4. "What information do we have about project deadlines?"
         5. "Can you summarize the main points from the latest meeting notes?"
-        6. "What are the key findings from the recent market research report?"
 
-        Choose the appropriate tool based on the user's request. If the user asks a question about the content of the documents, use the ask_question tool to provide a response."""
+        Choose the appropriate tool based on the user's request."""
     )
     human_prompt = HumanMessage("The time is now: " + datetime.now().isoformat())
     # print(system_prompt, human_prompt, state["messages"])
     response = model.invoke([system_prompt, human_prompt] + state["messages"])
-    print("CALL MODEL: ",response)
+    print(response)
     return {"messages": [response]}
 
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
-    print("Last message:", last_message)  # Debugging statement
-    print("Tool calls:", last_message.tool_calls)  # Debugging statement
-    print("continue" if last_message.tool_calls else "end")
     return "continue" if last_message.tool_calls else "end"
 
 # Initialize Graph with Memory
@@ -257,7 +236,10 @@ if prompt := st.chat_input("How can I help you schedule events?"):
     with st.spinner("Thinking..."):
         # Create input message
         input_message = HumanMessage(content=prompt)
+        
+        # Get conversation state from memory or start new
         state_snapshot = graph.get_state(config=config)
+        print("State snapshot:", state_snapshot)
         
         conversation_state = {"messages": []}
         if state_snapshot and hasattr(state_snapshot, 'values'):
@@ -265,15 +247,14 @@ if prompt := st.chat_input("How can I help you schedule events?"):
         
         conversation_state["messages"].append(input_message)
         
+        # Run agent
         for response in graph.stream(conversation_state, config=config):
             if 'agent' in response and 'messages' in response['agent']:
-                for message in response['agent']['messages']:
-                    if isinstance(message, (AIMessage, ToolMessage)) and (hasattr(message, 'content') and message.content):
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": message.content
-                        })
-                        st.rerun()
+                last_message = response['agent']['messages'][-1]
+                if isinstance(last_message, AIMessage) and hasattr(last_message, 'content'):
+                    # Add AI message to session state
+                    st.session_state.messages.append({"role": "assistant", "content": last_message.content})
+                    st.rerun()
 
 # Custom CSS to make the chat container scrollable
 st.markdown("""
